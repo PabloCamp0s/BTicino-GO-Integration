@@ -586,7 +586,9 @@ class BTicinoGoIntercomCard extends HTMLElement {
         this._attachVideo();
       };
       pc.onicecandidate = ({ candidate }) => {
-        if (!candidate) return;
+        // Some browsers (Firefox) end gathering with an empty candidate instead
+        // of null. It carries nothing to send, and the companion rejects it.
+        if (!candidate?.candidate) return;
         const payload = this._candidatePayload(candidate);
         if (this._offerAccepted) {
           this._sendCandidate(payload).catch((err) => {
@@ -636,7 +638,11 @@ class BTicinoGoIntercomCard extends HTMLElement {
       await pc.setRemoteDescription({ type: "answer", sdp: response.answer_sdp });
       if (this._sessionId !== sessionId) return;
       this._remoteCandidates.splice(0).forEach((candidate) => this._addRemoteCandidate(pc, candidate));
-      await Promise.all(this._queuedCandidates.splice(0).map((candidate) => this._sendCandidate(candidate)));
+      // As for a candidate trickled later, one the companion rejects is not a
+      // failed session: the others may already have connected it.
+      await Promise.all(this._queuedCandidates.splice(0).map((candidate) => this._sendCandidate(candidate).catch((err) => {
+        console.warn("bticino-go-intercom-card: failed to send ICE candidate", err);
+      })));
       if (this._sessionId !== sessionId) return;
       this._attachVideo();
     } catch (err) {
@@ -686,11 +692,20 @@ class BTicinoGoIntercomCard extends HTMLElement {
   // One button per lock of the intercom, as the camera lists them, with the
   // card's icon, name and hide overrides. A camera from an older integration
   // has no list: it keeps the single button for its own entrypoint.
+  // The lock of another entrypoint with a camera of its own belongs on that
+  // camera's card: a second door button here is easy to press by mistake,
+  // opening a door the card does not show. hide: false shows it anyway.
   _unlockButtons() {
-    const listed = this._cameraState()?.attributes?.bticino_unlocks;
+    const attributes = this._cameraState()?.attributes;
+    const listed = attributes?.bticino_unlocks;
     if (!Array.isArray(listed)) return [{ id: "", name: "Unlock", icon: "mdi:lock-open" }];
+    const own = attributes.bticino_entrypoint_id;
+    const shown = (item) => {
+      const hide = this._config.unlocks[item.id]?.hide;
+      return hide === undefined ? item.id === own || !item.camera : !hide;
+    };
     return listed
-      .filter((item) => item && item.id && !this._config.unlocks[item.id]?.hide)
+      .filter((item) => item && item.id && shown(item))
       .map((item) => {
         const custom = this._config.unlocks[item.id] || {};
         return { id: item.id, name: custom.name || item.label || item.id, icon: custom.icon || "mdi:lock-open" };
